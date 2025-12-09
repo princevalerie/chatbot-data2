@@ -449,7 +449,7 @@ def generate_sql_query(user_query, client):
         """
         
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-1.5-flash-002",
             contents=[
                 types.Content(
                     role="user",
@@ -626,7 +626,7 @@ def create_visualization(df, query, client):
         """
         
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-1.5-flash-002",
             contents=[
                 types.Content(
                     role="user",
@@ -957,9 +957,9 @@ elif not st.session_state.dataframes:
     st.info("📊 Please upload data files or connect to a database in the sidebar to begin analysis.")
 else:
     # Configure Gemini
-    model = configure_gemini(st.session_state.api_key)
+    client = configure_gemini(st.session_state.api_key)
     
-    if model:
+    if client:
         # Chat interface
         st.subheader("💬 Chat with your Data")
         
@@ -1050,7 +1050,7 @@ else:
                     # Auto visualization - show immediately
                     if query_id not in st.session_state.visualizations:
                         with st.spinner("🎨 Creating visualization..."):
-                            fig = create_visualization(display_df, user_msg, model)
+                            fig = create_visualization(display_df, user_msg, client)
                             if fig:
                                 st.session_state.visualizations[query_id] = fig
                             else:
@@ -1069,7 +1069,7 @@ else:
                                 with st.spinner("🎨 Creating visualization..."):
                                     # Use current query for context
                                     current_query = st.session_state.edited_queries.get(query_id, user_msg)
-                                    fig = create_visualization(display_df, current_query, model)
+                                    fig = create_visualization(display_df, current_query, client)
                                     if fig:
                                         st.session_state.visualizations[query_id] = fig
                                         st.rerun()
@@ -1086,7 +1086,7 @@ else:
                             if st.button(f"🔄 Re-visualize", key=f"reviz_btn_{i}"):
                                 with st.spinner("🎨 Re-creating visualization..."):
                                     current_query = st.session_state.edited_queries.get(query_id, user_msg)
-                                    fig = create_visualization(display_df, current_query, model)
+                                    fig = create_visualization(display_df, current_query, client)
                                     if fig:
                                         st.session_state.visualizations[query_id] = fig
                                         st.rerun()
@@ -1108,7 +1108,7 @@ else:
         if user_query:
             # Generate SQL query
             with st.spinner("🧠 Generating SQL query..."):
-                sql_query = generate_sql_query(user_query, model)
+                sql_query = generate_sql_query(user_query, client)
             
             if sql_query:
                 # Execute SQL query
@@ -1130,7 +1130,7 @@ else:
                     if st.session_state.auto_visualization:
                         query_id = f"query_{len(st.session_state.chat_history) - 1}"
                         with st.spinner("🎨 Creating visualization..."):
-                            fig = create_visualization(result_df, user_query, model)
+                            fig = create_visualization(result_df, user_query, client)
                             if fig:
                                 st.session_state.visualizations[query_id] = fig
                             else:
