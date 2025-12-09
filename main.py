@@ -626,7 +626,7 @@ def create_visualization(df, query, client):
         """
         
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-3-pro-preview",
             contents=[
                 types.Content(
                     role="user",
