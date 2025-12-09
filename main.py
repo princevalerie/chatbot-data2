@@ -69,51 +69,6 @@ st.markdown("""
         font-family: 'Courier New', monospace;
     }
     .stDataFrame {
-        border: 1px solid #e0e0e0;
-        border-radius: 5px;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-def detect_env_api_key():
-    """Detect and validate Gemini API key from environment variables"""
-    api_key = None
-    source = None
-    
-    # Try to get API key from environment
-    if DOTENV_AVAILABLE:
-        api_key = os.getenv('GEMINI_API_KEY')
-        if api_key:
-            source = ".env file"
-    
-        # Handle matplotlib/seaborn visualizations
-        plt.clf()  # Clear any previous plots
-        
-        # Create a safe execution environment
-        exec_globals = {
-            'df': df,
-            'plt': plt,
-            'sns': sns,
-            'pd': pd
-        }
-        
-        # Add wordcloud if available
-        if WORDCLOUD_AVAILABLE:
-            exec_globals['WordCloud'] = WordCloud
-
-        exec(viz_code, exec_globals)
-        # Return the current figure
-        return plt.gcf()
-        
-    except Exception as e:
-        st.error(f"Error creating visualization: {str(e)}")
-        st.error(f"Generated code: {viz_code if 'viz_code' in locals() else 'No code generated'}")
-        return None
-
-# Sidebar
-with st.sidebar:
-    st.title("🔧 Configuration")
-    
     # API Key configuration section
     st.subheader("🔑 Gemini API Configuration")
     
