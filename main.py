@@ -449,7 +449,7 @@ def generate_sql_query(user_query, client):
         """
         
         response = client.models.generate_content(
-            model="gemini-3-pro-preview",
+            model="gemini-1.5-flash",
             contents=[
                 types.Content(
                     role="user",
@@ -626,7 +626,7 @@ def create_visualization(df, query, client):
         """
         
         response = client.models.generate_content(
-            model="gemini-3-pro-preview",
+            model="gemini-1.5-flash",
             contents=[
                 types.Content(
                     role="user",
