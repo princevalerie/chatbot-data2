@@ -369,21 +369,6 @@ else:
         for i, (user_msg, bot_response, sql_query, result_df) in enumerate(st.session_state.chat_history):
             # User message
             st.markdown(f"""
-            <div class="chat-message user-message">
-                <strong>You:</strong> {user_msg}
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Bot response
-            st.markdown(f"""
-            <div class="chat-message bot-message">
-                <strong>🤖 Bot:</strong> {bot_response}
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # SQL query
-            if sql_query:
-                st.markdown("**Generated SQL Query:**")
                 
                 if st.session_state.auto_visualization:
                     # Auto mode - show SQL as code block only
