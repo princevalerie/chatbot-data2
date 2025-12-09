@@ -1,0 +1,11 @@
+google-genai
+streamlit
+pandas
+pandasql
+matplotlib
+seaborn
+python-dotenv
+sqlalchemy
+wordcloud
+psycopg2-binary
+mysql-connector-python
