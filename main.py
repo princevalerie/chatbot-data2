@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import pandasql as ps
-import google.generativeai as genai
 from google import genai
 from google.genai import types
 import matplotlib.pyplot as plt
@@ -69,6 +68,605 @@ st.markdown("""
         font-family: 'Courier New', monospace;
     }
     .stDataFrame {
+        border: 1px solid #e0e0e0;
+        border-radius: 5px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+def detect_env_api_key():
+    """Detect and validate Gemini API key from environment variables"""
+    api_key = None
+    source = None
+    
+    # Try to get API key from environment
+    if DOTENV_AVAILABLE:
+        api_key = os.getenv('GEMINI_API_KEY')
+        if api_key:
+            source = ".env file"
+    
+    # If not found in .env, try system environment
+    if not api_key:
+        api_key = os.environ.get('GEMINI_API_KEY')
+        if api_key:
+            source = "system environment"
+    
+    # Validate the API key by testing it
+    if api_key:
+        try:
+            client = genai.Client(api_key=api_key)
+            # Test with a simple API call
+            return api_key, source, True
+        except Exception as e:
+            return api_key, source, False
+    
+    return None, None, False
+
+def configure_gemini(api_key):
+    """Configure Gemini API and return client"""
+    try:
+        client = genai.Client(api_key=api_key)
+        return client
+    except Exception as e:
+        st.error(f"Error configuring Gemini API: {str(e)}")
+        return None
+
+# Initialize session state
+if 'chat_history' not in st.session_state:
+    st.session_state.chat_history = []
+if 'dataframes' not in st.session_state:
+    st.session_state.dataframes = {}
+if 'api_key' not in st.session_state:
+    st.session_state.api_key = ""
+if 'auto_visualization' not in st.session_state:
+    st.session_state.auto_visualization = True
+if 'visualizations' not in st.session_state:
+    st.session_state.visualizations = {}
+if 'edited_queries' not in st.session_state:
+    st.session_state.edited_queries = {}
+if 'query_results' not in st.session_state:
+    st.session_state.query_results = {}
+if 'db_connections' not in st.session_state:
+    st.session_state.db_connections = {}
+if 'table_schemas' not in st.session_state:
+    st.session_state.table_schemas = {}
+if 'full_table_info' not in st.session_state:
+    st.session_state.full_table_info = {}
+if 'data_source_type' not in st.session_state:
+    st.session_state.data_source_type = "files"  # "files" or "database"
+if 'env_api_key' not in st.session_state:
+    st.session_state.env_api_key = None
+if 'env_api_source' not in st.session_state:
+    st.session_state.env_api_source = None
+if 'env_api_valid' not in st.session_state:
+    st.session_state.env_api_valid = False
+
+# Detect environment API key on startup
+if not st.session_state.env_api_key:
+    env_key, env_source, env_valid = detect_env_api_key()
+    if env_key:
+        st.session_state.env_api_key = env_key
+        st.session_state.env_api_source = env_source
+        st.session_state.env_api_valid = env_valid
+        if env_valid:
+            st.session_state.api_key = env_key
+
+def create_db_connection(db_type, host, port, database, username, password):
+    """Create database connection"""
+    try:
+        if db_type == "PostgreSQL":
+            # Create PostgreSQL connection
+            connection_string = f"postgresql://{username}:{urllib.parse.quote_plus(password)}@{host}:{port}/{database}"
+            engine = create_engine(connection_string)
+            
+            # Test connection
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            
+            return engine
+            
+        elif db_type == "MySQL":
+            # Create MySQL connection
+            connection_string = f"mysql+mysqlconnector://{username}:{urllib.parse.quote_plus(password)}@{host}:{port}/{database}"
+            engine = create_engine(connection_string)
+            
+            # Test connection
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            
+            return engine
+            
+    except Exception as e:
+        st.error(f"Error connecting to {db_type}: {str(e)}")
+        return None
+
+def get_table_list(engine, db_type):
+    """Get list of tables from database"""
+    try:
+        if db_type == "PostgreSQL":
+            query = """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND (table_type = 'BASE TABLE' OR table_type = 'VIEW')
+            ORDER BY table_name;
+            """
+        elif db_type == "MySQL":
+            query = """
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = DATABASE()
+            ORDER BY table_name
+            """
+        
+        with engine.connect() as conn:
+            result = conn.execute(text(query))
+            tables = [row[0] for row in result]
+        
+        return tables
+    except Exception as e:
+        st.error(f"Error getting table list: {str(e)}")
+        return []
+
+def get_table_sample_and_schema(engine, table_name, sample_size=10):
+    """Get table sample (first 10 rows) and schema info"""
+    try:
+        # Get sample data
+        sample_query = f"SELECT * FROM {table_name} LIMIT {sample_size}"
+        sample_df = pd.read_sql(sample_query, engine)
+        
+        # Get row count
+        count_query = f"SELECT COUNT(*) as total_rows FROM {table_name}"
+        with engine.connect() as conn:
+            result = conn.execute(text(count_query))
+            total_rows = result.fetchone()[0]
+        
+        # Get column info
+        info_query = f"SELECT * FROM {table_name} WHERE 1=0"  # Get structure only
+        info_df = pd.read_sql(info_query, engine)
+        
+        return sample_df, total_rows, info_df.dtypes.to_dict()
+        
+    except Exception as e:
+        st.error(f"Error getting table data for {table_name}: {str(e)}")
+        return None, 0, {}
+
+def read_uploaded_file(uploaded_file):
+    """Read uploaded file based on its extension"""
+    try:
+        file_extension = os.path.splitext(uploaded_file.name)[1].lower()
+        
+        if file_extension == '.csv':
+            # Read CSV file
+            df = pd.read_csv(uploaded_file)
+            
+        elif file_extension in ['.xlsx', '.xls']:
+            # Read Excel file with enhanced error handling
+            try:
+                # First, get all sheet names to check what's available
+                excel_file = pd.ExcelFile(uploaded_file)
+                sheet_names = excel_file.sheet_names
+                
+                # Try to read the first sheet
+                df = None
+                for sheet_name in sheet_names:
+                    try:
+                        # Read with different header options
+                        temp_df = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=0)
+                        
+                        # Check if this sheet has meaningful data
+                        if not temp_df.empty and len(temp_df.columns) > 0:
+                            # Remove completely empty rows and columns
+                            temp_df = temp_df.dropna(how='all').dropna(axis=1, how='all')
+                            
+                            # Check if we still have data after cleaning
+                            if not temp_df.empty and len(temp_df.columns) > 0:
+                                df = temp_df
+                                break
+                    except Exception:
+                        continue
+                
+                # If first attempt failed, try reading without header and detect it manually
+                if df is None or df.empty:
+                    for sheet_name in sheet_names:
+                        try:
+                            # Read without assuming header position
+                            temp_df = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None)
+                            
+                            if not temp_df.empty:
+                                # Try to find the header row (look for row with most non-null values)
+                                header_row = 0
+                                max_non_null = 0
+                                
+                                for i in range(min(5, len(temp_df))):  # Check first 5 rows
+                                    non_null_count = temp_df.iloc[i].count()
+                                    if non_null_count > max_non_null:
+                                        max_non_null = non_null_count
+                                        header_row = i
+                                
+                                # Re-read with detected header
+                                df = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=header_row)
+                                df = df.dropna(how='all').dropna(axis=1, how='all')
+                                
+                                if not df.empty and len(df.columns) > 0:
+                                    break
+                        except Exception:
+                            continue
+                
+                if df is None or df.empty:
+                    raise ValueError("Could not read any meaningful data from Excel file")
+                
+            except Exception as e:
+                raise ValueError(f"Error reading Excel file: {str(e)}")
+            
+        elif file_extension == '.txt':
+            # Read TXT file - try different delimiters
+            try:
+                # First try tab-separated
+                df = pd.read_csv(uploaded_file, sep='\t')
+                # Check if it looks reasonable (more than 1 column)
+                if len(df.columns) == 1:
+                    # Try comma-separated
+                    uploaded_file.seek(0)  # Reset file pointer
+                    df = pd.read_csv(uploaded_file, sep=',')
+                    if len(df.columns) == 1:
+                        # Try semicolon-separated
+                        uploaded_file.seek(0)
+                        df = pd.read_csv(uploaded_file, sep=';')
+                        if len(df.columns) == 1:
+                            # Try pipe-separated
+                            uploaded_file.seek(0)
+                            df = pd.read_csv(uploaded_file, sep='|')
+            except:
+                # Fallback to comma-separated
+                uploaded_file.seek(0)
+                df = pd.read_csv(uploaded_file)
+        else:
+            raise ValueError(f"Unsupported file type: {file_extension}")
+        
+        # Enhanced data cleaning for all file types
+        if df.empty:
+            raise ValueError("File is empty after processing")
+        
+        # Handle column names properly
+        # First, ensure all column names are strings
+        df.columns = df.columns.astype(str)
+        
+        # Clean column names (remove special characters, spaces)
+        df.columns = df.columns.str.strip()
+        
+        # Replace problematic characters with underscores
+        df.columns = df.columns.str.replace(r'[^\w\s]', '_', regex=True)
+        df.columns = df.columns.str.replace(r'\s+', '_', regex=True)  # Replace multiple spaces with single underscore
+        df.columns = df.columns.str.replace(r'_+', '_', regex=True)   # Replace multiple underscores with single
+        df.columns = df.columns.str.strip('_')  # Remove leading/trailing underscores
+        
+        # Handle duplicate column names
+        if df.columns.duplicated().any():
+            cols = []
+            for i, col in enumerate(df.columns):
+                if col in cols:
+                    counter = 1
+                    new_col = f"{col}_{counter}"
+                    while new_col in cols:
+                        counter += 1
+                        new_col = f"{col}_{counter}"
+                    cols.append(new_col)
+                else:
+                    cols.append(col)
+            df.columns = cols
+        
+        # Ensure column names are valid SQL identifiers
+        final_cols = []
+        for col in df.columns:
+            # Ensure column starts with letter or underscore
+            if col and not (col[0].isalpha() or col[0] == '_'):
+                col = f"col_{col}"
+            
+            # Ensure column is not empty
+            if not col or col.strip() == '':
+                col = f"column_{len(final_cols)}"
+            
+            final_cols.append(col)
+        
+        df.columns = final_cols
+        
+        # Convert problematic data types for SQL compatibility
+        for col in df.columns:
+            # Handle mixed types in columns
+            if df[col].dtype == 'object':
+                # Try to convert to numeric if possible
+                try:
+                    # Check if the column contains mostly numbers
+                    numeric_series = pd.to_numeric(df[col], errors='coerce')
+                    if numeric_series.notna().sum() > len(df) * 0.8:  # If 80% can be converted to numbers
+                        df[col] = numeric_series
+                except:
+                    pass
+        
+        # Final validation
+        if len(df.columns) == 0:
+            raise ValueError("No valid columns found in file")
+        
+        return df, file_extension
+        
+    except Exception as e:
+        raise Exception(f"Error reading file: {str(e)}")
+
+def generate_sql_query(user_query, client):
+    """Generate SQL query from natural language using Gemini"""
+    try:
+        # Create context about available tables from both files and databases
+        schema_context = "Available tables and their schemas:\n"
+        
+        # Add uploaded files
+        for table_name, df in st.session_state.dataframes.items():
+            # Skip database tables (they have connection prefix)
+            if not any(table_name.startswith(f"{conn_name}_") for conn_name in st.session_state.db_connections.keys()):
+                schema_context += f"\nFile Table: {table_name}\n"
+                schema_context += f"Columns: {', '.join(df.columns.tolist())}\n"
+                schema_context += f"Sample data (first 2 rows):\n{df.head(2).to_string()}\n"
+        
+        # Add database tables
+        for conn_name, (engine, db_type) in st.session_state.db_connections.items():
+            if conn_name in st.session_state.table_schemas:
+                schema_context += f"\nDatabase: {conn_name} ({db_type})\n"
+                for table_name, table_info in st.session_state.table_schemas[conn_name].items():
+                    sample_df = st.session_state.dataframes.get(f"{conn_name}_{table_name}")
+                    if sample_df is not None:
+                        total_rows = st.session_state.full_table_info[conn_name][table_name]['total_rows']
+                        schema_context += f"\nDatabase Table: {table_name} (Total rows: {total_rows})\n"
+                        schema_context += f"Columns: {', '.join(sample_df.columns.tolist())}\n"
+                        schema_context += f"Sample data (first 2 rows):\n{sample_df.head(2).to_string()}\n"
+        
+        # Determine if we should use pandasql or direct database query
+        has_files = any(not table_name.startswith(f"{conn_name}_") 
+                       for table_name in st.session_state.dataframes.keys() 
+                       for conn_name in st.session_state.db_connections.keys())
+        has_database = bool(st.session_state.db_connections)
+        
+        sql_type = "pandasql" if has_files or not has_database else "standard SQL"
+        
+        prompt = f"""
+        You are a SQL expert. Based on the user's natural language query and the available table schemas, 
+        generate a SQL query using {sql_type} syntax.
+        
+        {schema_context}
+        
+        User Query: {user_query}
+        
+        Rules:
+        1. Use table names exactly as provided in the schema
+        2. Generate only the SQL query, no explanations
+        3. Use {'pandasql' if sql_type == 'pandasql' else 'standard SQL'} syntax
+        4. If the query involves aggregation, use appropriate GROUP BY clauses
+        5. For filtering, use WHERE clauses
+        6. For database tables, the query will be executed on the full dataset (not just the sample shown)
+        7. For file tables, the query uses the complete uploaded data
+        8. Return only the SQL query without any markdown formatting or extra text
+        
+        SQL Query:
+        """
+        
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-preview-05-20",
+            contents=[
+                types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text=prompt)],
+                ),
+            ],
+        )
+        sql_query = response.text.strip()
+        
+        # Clean up the response to get only SQL
+        sql_query = re.sub(r'```sql|```|SQL Query:|Query:', '', sql_query).strip()
+        
+        return sql_query
+    except Exception as e:
+        st.error(f"Error generating SQL query: {str(e)}")
+        return None
+
+def execute_sql_query(sql_query):
+    """Execute SQL query using either pandasql for files or database connection"""
+    try:
+        # Check if query involves database tables
+        query_lower = sql_query.lower()
+        
+        # Find if any database tables are referenced
+        db_tables_used = []
+        for conn_name, (engine, db_type) in st.session_state.db_connections.items():
+            if conn_name in st.session_state.table_schemas:
+                for table_name in st.session_state.table_schemas[conn_name].keys():
+                    if table_name.lower() in query_lower:
+                        db_tables_used.append((conn_name, table_name, engine))
+        
+        # If database tables are involved, use database execution
+        if db_tables_used:
+            # Use the first database connection found
+            engine = db_tables_used[0][2]
+            result = pd.read_sql(sql_query, engine)
+            return result
+        else:
+            # Use pandasql for file-based queries
+            # Create a local namespace with file dataframes only (exclude database tables)
+            local_ns = {}
+            for table_name, df in st.session_state.dataframes.items():
+                # Only include tables that are not from database connections
+                if not any(table_name.startswith(f"{conn_name}_") for conn_name in st.session_state.db_connections.keys()):
+                    local_ns[table_name] = df
+            
+            if not local_ns:
+                st.error("No data tables available for query execution")
+                return None
+            
+            result = ps.sqldf(sql_query, local_ns)
+            return result
+        
+    except Exception as e:
+        st.error(f"Error executing SQL query: {str(e)}")
+        return None
+
+def create_visualization(df, query, client):
+    """Create visualizations using Gemini to generate matplotlib/seaborn code with support for wordcloud"""
+    try:
+        if df is None or df.empty or len(df) == 0:
+            return None
+        
+        # Analyze data structure
+        numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+        categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+        datetime_cols = df.select_dtypes(include=['datetime64']).columns.tolist()
+        
+        # Enhanced analysis for special visualization types
+        text_cols = []
+        
+        # Detect text columns suitable for wordcloud
+        for col in categorical_cols:
+            if df[col].dtype == 'object':
+                # Check if column contains longer text (potential for wordcloud)
+                avg_length = df[col].astype(str).str.len().mean()
+                if avg_length > 20:  # Arbitrary threshold for text content
+                    text_cols.append(col)
+        
+        # Check available libraries
+        available_libs = []
+        if WORDCLOUD_AVAILABLE:
+            available_libs.append("WordCloud")
+        
+        # Create enhanced data summary for Gemini
+        data_info = f"""
+        DataFrame shape: {df.shape}
+        Columns info:
+        - Numeric columns: {numeric_cols}
+        - Categorical columns: {categorical_cols} 
+        - DateTime columns: {datetime_cols}
+        - Text columns (for wordcloud): {text_cols}
+        
+        Available visualization libraries: {', '.join(available_libs)}
+        
+        Sample data:
+        {df.head(3).to_string()}
+        
+        Data types:
+        {df.dtypes.to_string()}
+        """
+        
+        # Enhanced prompt with wordcloud support
+        wordcloud_instructions = ""
+        if WORDCLOUD_AVAILABLE and text_cols:
+            wordcloud_instructions = f"""
+        
+        WordCloud Instructions (if appropriate):
+        - For text analysis queries, use WordCloud from wordcloud library
+        - Combine text from relevant columns using: ' '.join(df[column].dropna().astype(str))
+        - Use: WordCloud(width=800, height=400, background_color='white').generate(text)
+        - Display with: plt.imshow(wordcloud, interpolation='bilinear')
+        - Remove axes: plt.axis('off')
+        Text columns available: {text_cols}
+        """
+
+        
+        prompt = f"""
+        You are a data visualization expert. Based on the user's query and the resulting data, 
+        generate Python code to create the most appropriate visualization.
+        
+        User Query: "{query}"
+        
+        Data Information:
+        {data_info}
+        {wordcloud_instructions}
+        
+        Instructions:
+        1. Analyze the query intent and data structure to determine the best visualization type
+        2. Standard charts: bar chart, line chart, scatter plot, histogram, box plot, heatmap, pie chart
+        3. Special visualizations:
+           - WordCloud: For text analysis, word frequency, content analysis
+        4. Choose the most appropriate visualization based on:
+           - Query keywords (e.g., "word", "text", "frequency" → WordCloud)
+           - Data structure and column names
+        5. Generate clean Python code using the variable 'df' for the dataframe
+        6. For matplotlib/seaborn: Set figure size with plt.figure(figsize=(10, 6))
+        7. Add meaningful title, labels, and styling
+        8. Use seaborn style: sns.set_style("whitegrid") for standard plots
+        9. Return ONLY the Python code, no explanations or markdown
+        10. Ensure the code handles potential data issues (missing values, etc.)
+        11. For matplotlib plots: Use plt.tight_layout() and plt.show() at the end
+        
+        Standard matplotlib example:
+        ```
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        
+        sns.set_style("whitegrid")
+        plt.figure(figsize=(10, 6))
+        # Your visualization code here
+        plt.title("Your Title")
+        plt.tight_layout()
+        plt.show()
+        ```
+        
+        WordCloud example:
+        ```
+        from wordcloud import WordCloud
+        import matplotlib.pyplot as plt
+        
+        text = ' '.join(df['text_column'].dropna().astype(str))
+        wordcloud = WordCloud(width=800, height=400, background_color='white').generate(text)
+        
+        plt.figure(figsize=(10, 6))
+        plt.imshow(wordcloud, interpolation='bilinear')
+        plt.axis('off')
+        plt.title('Word Cloud')
+        plt.tight_layout()
+        plt.show()
+        ```
+        
+        Generate the visualization code:
+        """
+        
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-preview-05-20",
+            contents=[
+                types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text=prompt)],
+                ),
+            ],
+        )
+        viz_code = response.text.strip()
+        
+        # Clean up the response
+        viz_code = re.sub(r'```python|```', '', viz_code).strip()
+        
+        # Handle matplotlib/seaborn visualizations
+        plt.clf()  # Clear any previous plots
+        
+        # Create a safe execution environment
+        exec_globals = {
+            'df': df,
+            'plt': plt,
+            'sns': sns,
+            'pd': pd
+        }
+        
+        # Add wordcloud if available
+        if WORDCLOUD_AVAILABLE:
+            exec_globals['WordCloud'] = WordCloud
+
+        exec(viz_code, exec_globals)
+        # Return the current figure
+        return plt.gcf()
+        
+    except Exception as e:
+        st.error(f"Error creating visualization: {str(e)}")
+        st.error(f"Generated code: {viz_code if 'viz_code' in locals() else 'No code generated'}")
+        return None
+
+# Sidebar
+with st.sidebar:
+    st.title("🔧 Configuration")
+    
     # API Key configuration section
     st.subheader("🔑 Gemini API Configuration")
     
@@ -369,6 +967,21 @@ else:
         for i, (user_msg, bot_response, sql_query, result_df) in enumerate(st.session_state.chat_history):
             # User message
             st.markdown(f"""
+            <div class="chat-message user-message">
+                <strong>You:</strong> {user_msg}
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Bot response
+            st.markdown(f"""
+            <div class="chat-message bot-message">
+                <strong>🤖 Bot:</strong> {bot_response}
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # SQL query
+            if sql_query:
+                st.markdown("**Generated SQL Query:**")
                 
                 if st.session_state.auto_visualization:
                     # Auto mode - show SQL as code block only
